@@ -155,6 +155,7 @@ docker pull ghcr.io/sakarie9/starwhisper:latest
 # 数据库路径由配置文件中的 database.path 决定，相对路径相对于 WORKDIR /data
 docker run -d \
   --name starwhisper \
+  -v /etc/timezone:/etc/timezone:ro -v /etc/localtime:/etc/localtime:ro \
   -v /path/to/config.toml:/etc/starwhisper/config.toml:ro \
   -v starwhisper-data:/data \
   ghcr.io/sakarie9/starwhisper:latest
@@ -174,8 +175,9 @@ services:
     container_name: starwhisper
     restart: unless-stopped
     environment:
-      - STARWHISPER_CONFIG=/etc/starwhisper/config.toml
       - RUST_LOG=info
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
     volumes:
       - /path/to/config.toml:/etc/starwhisper/config.toml:ro
       - starwhisper-data:/data
