@@ -1,0 +1,22 @@
+[github]
+token = "ghp_xxxx"
+usernames = ["octocat", "torvalds"]
+
+[telegram]
+bot_token = "123456:ABC..."
+chat_id = "-1001234567890"
+
+[llm]
+provider = "openai"      # "openai" | "claude"
+api_key = "sk-xxx"
+model = "gpt-4o"
+api_base = "https://api.openai.com/v1"  # 可选，用于代理
+max_tokens = 65536    # 可选，默认 64K，按模型上下文窗口配置
+
+[database]
+path = "data.db"
+
+[schedule]
+cron = "0 0 8 * * *"     # cron 表达式，每天早上 8 点执行（秒 分 时 日 月 周）
+notify_mode = "summary"  # "immediate" | "summary"（默认 summary）
+notify_on_first_run = false  # 首次冷启动是否发送通知（默认 false，debug 时设为 true）

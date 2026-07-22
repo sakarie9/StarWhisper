@@ -1,0 +1,96 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# vim: set ts=2 sw=2 tw=0 fo=cnqoj
+
+version: 2
+
+# Project name should ideally match the project name in your Cargo.toml.
+project_name: "starwhisper"
+
+before:
+  hooks:
+    - rustup default stable
+    - cargo install --locked cargo-zigbuild
+    # - cargo install --locked cross --git https://github.com/cross-rs/cross
+    - cargo fetch --locked
+
+builds:
+  - id: linux-gnu
+    builder: rust
+    # tool: "cargo"
+    # command: "build"
+    # flags:
+    #   - --release
+    #   - -p=subproject # when using cargo-workspaces
+    targets:
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+
+  # - id: windows-gnu
+  #   builder: rust
+  #   # tool: "cross"
+  #   # command: "build"
+  #   # flags:
+  #   #   - --release
+  #   #   - -p=subproject # when using cargo-workspaces
+  #   targets:
+  #     - x86_64-pc-windows-gnu
+
+  # - id: linux-musl
+  #   builder: rust
+  #   targets:
+  #     - x86_64-unknown-linux-musl
+  #     - aarch64-unknown-linux-musl
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-{{ .ShortCommit }}"
+
+# Creates archives for each target.
+archives:
+  - formats: tar.gz
+    # this name template makes the OS and Arch compatible with the results of `uname`.
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    #  {{- if contains .Target "musl" }}-musl
+    #  {{- else if contains .Target "gnu" }}-gnu
+    #  {{- end }}
+
+    # use zip for windows archives
+    format_overrides:
+      - goos: windows
+        formats: zip
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^build:"
+
+##DOCKER_START##
+dockers_v2:
+  - id: ghcr
+    images:
+      - "ghcr.io/sakarie9/starwhisper"
+    dockerfile: Dockerfile
+    # ids:
+    #   - linux-amd64-gnu
+    #   - linux-arm64-gnu
+    # platforms:
+    #   - linux/amd64
+    #   - linux/arm64
+    tags:
+      - "{{ if .IsSnapshot }}{{ .Branch }}{{ else }}v{{ .Version }}{{ end }}"
+      - "{{ if not .IsSnapshot }}latest{{ end }}"
+    labels:
+      "org.opencontainers.image.created": "{{.Date}}"
+      "org.opencontainers.image.name": "{{.ProjectName}}"
+      "org.opencontainers.image.revision": "{{.FullCommit}}"
+      "org.opencontainers.image.version": "{{.Version}}"
+      "org.opencontainers.image.source": "{{.GitURL}}"
+##DOCKER_END##
