@@ -28,3 +28,4 @@ rustc-ice-*.txt
 config.toml
 .env
 .scripts/
+.zig-cache/
