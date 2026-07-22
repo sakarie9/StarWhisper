@@ -1,8 +1,5 @@
 # StarWhisper
 
-[![Rust](https://img.shields.io/badge/Rust-1.85%2B-blue?logo=rust)](https://www.rust-lang.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-
 [English](./README.md) | 中文
 
 **StarWhisper** 是一个 Telegram 机器人，用于监控 GitHub 上已标星（Star）的仓库，并在检测到新 release 时发送通知。支持两种通知模式：即时单条推送和 AI 每日摘要。

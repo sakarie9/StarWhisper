@@ -1,8 +1,5 @@
 # StarWhisper
 
-[![Rust](https://img.shields.io/badge/Rust-1.85%2B-blue?logo=rust)](https://www.rust-lang.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-
 English | [中文](./README_CN.md)
 
 **StarWhisper** is a Telegram bot that monitors starred repositories on GitHub and sends notifications when new releases are detected. It supports two notification modes — immediate per-release alerts and AI-powered daily digests.
