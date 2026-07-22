@@ -36,12 +36,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Push Docker image
         run: |
-          docker push ghcr.io/${{ github.repository }}:${{ github.ref_name }}-amd64
-          docker push ghcr.io/${{ github.repository }}:${{ github.ref_name }}-arm64
+          REPO_LOWER="${GITHUB_REPOSITORY,,}"
+          docker push ghcr.io/$REPO_LOWER:${{ github.ref_name }}-amd64
+          docker push ghcr.io/$REPO_LOWER:${{ github.ref_name }}-arm64
           docker buildx imagetools create \
-            --tag ghcr.io/${{ github.repository }}:${{ github.ref_name }} \
-            ghcr.io/${{ github.repository }}:${{ github.ref_name }}-amd64 \
-            ghcr.io/${{ github.repository }}:${{ github.ref_name }}-arm64
+            --tag ghcr.io/$REPO_LOWER:${{ github.ref_name }} \
+            ghcr.io/$REPO_LOWER:${{ github.ref_name }}-amd64 \
+            ghcr.io/$REPO_LOWER:${{ github.ref_name }}-arm64
       - name: Upload assets
         uses: actions/upload-artifact@v7
         with:
