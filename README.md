@@ -155,7 +155,7 @@ docker pull ghcr.io/sakarie9/starwhisper:latest
 # and uses the database.path from the config (relative paths are relative to WORKDIR /data)
 docker run -d \
   --name starwhisper \
-  -v /etc/timezone:/etc/timezone:ro -v /etc/localtime:/etc/localtime:ro \
+  -e TZ=Asia/Shanghai \
   -v /path/to/config.toml:/etc/starwhisper/config.toml:ro \
   -v starwhisper-data:/data \
   ghcr.io/sakarie9/starwhisper:latest
@@ -177,8 +177,7 @@ services:
     restart: unless-stopped
     environment:
       - RUST_LOG=info
-      - /etc/timezone:/etc/timezone:ro
-      - /etc/localtime:/etc/localtime:ro
+      - TZ=Asia/Shanghai
     volumes:
       - /path/to/config.toml:/etc/starwhisper/config.toml:ro
       - starwhisper-data:/data
