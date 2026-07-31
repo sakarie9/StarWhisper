@@ -29,7 +29,6 @@
 - [机器人命令](#机器人命令)
 - [编译构建](#编译构建)
 - [Docker](#docker)
-- [许可证](#许可证)
 
 ---
 
@@ -104,7 +103,7 @@ notify_on_first_run = false          # 首次冷启动是否发送通知
 
 | 命令 | 说明 |
 | --- | --- |
-| `/check` | 手动触发一次 release 检查 |
+| `/check` | 手动触发一次 release 检查（实时进度提示） |
 | `/list` | 列出所有已跟踪仓库及其最新版本 |
 | `/blacklist add owner/repo` | 将仓库加入黑名单 |
 | `/blacklist remove owner/repo` | 将仓库移出黑名单 |

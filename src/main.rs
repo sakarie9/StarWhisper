@@ -60,7 +60,16 @@ async fn main() -> anyhow::Result<()> {
     // First startup with empty database: refresh immediately
     if !db.has_tracked_repos().await.unwrap_or(false) {
         info!("First startup detected (no tracked repos), running initial check");
-        match scheduler::run_check(&config, &db, &github, &telegram, &llm).await {
+        match scheduler::run_check(
+            &config,
+            &db,
+            &github,
+            &telegram,
+            &llm,
+            &scheduler::NoopProgress,
+        )
+        .await
+        {
             Ok(()) => info!("Initial check completed successfully"),
             Err(e) => error!("Initial check failed: {:#}", e),
         }

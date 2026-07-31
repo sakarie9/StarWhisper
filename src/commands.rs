@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -12,6 +14,7 @@ use crate::db::repository::Database;
 use crate::github::client::GitHubClient;
 use crate::llm::client::LlmClient;
 use crate::scheduler;
+use crate::scheduler::CheckProgress;
 use crate::telegram::notifier::TelegramNotifier;
 
 pub async fn run_bot(
@@ -102,7 +105,7 @@ pub async fn run_bot(
                 let response = match cmd {
                     "/start" | "/help" => {
                         debug!("Executing help command");
-                        cmd_help()
+                        Some(cmd_help())
                     }
                     "/check" => {
                         info!("Executing /check command");
@@ -110,15 +113,15 @@ pub async fn run_bot(
                     }
                     "/list" => {
                         info!("Executing /list command");
-                        cmd_list(&db).await
+                        Some(cmd_list(&db).await)
                     }
                     "/blacklist" => {
                         info!("Executing /blacklist command (args: {:?})", &args[1..]);
-                        cmd_blacklist(&db, &args).await
+                        Some(cmd_blacklist(&db, &args).await)
                     }
                     "/status" => {
                         info!("Executing /status command");
-                        cmd_status(&config, &db).await
+                        Some(cmd_status(&config, &db).await)
                     }
                     _ => {
                         debug!("Unknown command: {}", cmd);
@@ -126,9 +129,11 @@ pub async fn run_bot(
                     }
                 };
 
-                debug!("Sending response for {} ({} chars)", cmd, response.len());
-                if let Err(e) = telegram.send_markdown(&response).await {
-                    error!("Failed to send command response for {}: {}", cmd, e);
+                if let Some(response) = response {
+                    debug!("Sending response for {} ({} chars)", cmd, response.len());
+                    if let Err(e) = telegram.send_markdown(&response).await {
+                        error!("Failed to send command response for {}: {}", cmd, e);
+                    }
                 }
             }
         }
@@ -149,22 +154,57 @@ fn cmd_help() -> String {
         .to_string()
 }
 
+/// Progress reporter that edits a single plain-text Telegram message in place.
+struct CheckProgressMessage<'a> {
+    telegram: &'a TelegramNotifier,
+    message_id: i64,
+}
+
+impl CheckProgress for CheckProgressMessage<'_> {
+    fn report<'a>(&'a self, text: &'a str) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            if let Err(e) = self.telegram.edit_plain(self.message_id, text).await {
+                error!("Failed to update check progress message: {}", e);
+            }
+        })
+    }
+}
+
+/// Run a manual check, reporting progress by editing a single plain-text message.
+///
+/// Returns `None` on success — the final status is edited into the progress
+/// message itself. Returns `Some(text)` only when a separate error message
+/// needs to be sent by the caller (the progress message is left untouched).
 async fn cmd_check(
     config: &Config,
     db: &Database,
     github: &GitHubClient,
     telegram: &TelegramNotifier,
     llm: &LlmClient,
-) -> String {
+) -> Option<String> {
+    debug!("Sending check progress message");
+    let message_id = match telegram.send_plain("⏳ 正在检查更新...").await {
+        Ok(id) => id,
+        Err(e) => {
+            error!("Failed to send check progress message: {}", e);
+            return Some(format!("❌ 无法发送进度消息：{}", e));
+        }
+    };
+
+    let progress = CheckProgressMessage {
+        telegram,
+        message_id,
+    };
+
     debug!("Running manual check");
-    match scheduler::run_check(config, db, github, telegram, llm).await {
+    match scheduler::run_check(config, db, github, telegram, llm, &progress).await {
         Ok(()) => {
             info!("Manual check completed successfully");
-            "✅ 检查完成，详见通知消息。".to_string()
+            None
         }
         Err(e) => {
             error!("Manual check failed: {:#}", e);
-            format!("❌ 检查失败：{}", e)
+            Some(format!("❌ 检查失败：{}", e))
         }
     }
 }

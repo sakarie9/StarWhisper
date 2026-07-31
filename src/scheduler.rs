@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -60,8 +62,15 @@ pub async fn run_scheduler(
         let ctx = ctx.clone();
         Box::pin(async move {
             info!("Scheduled check triggered");
-            if let Err(e) =
-                run_check(&ctx.config, &ctx.db, &ctx.github, &ctx.telegram, &ctx.llm).await
+            if let Err(e) = run_check(
+                &ctx.config,
+                &ctx.db,
+                &ctx.github,
+                &ctx.telegram,
+                &ctx.llm,
+                &NoopProgress,
+            )
+            .await
             {
                 error!("Scheduled check failed: {:#}", e);
             }
@@ -80,12 +89,28 @@ pub async fn run_scheduler(
 
 // ─── Public entry point ───────────────────────────────────────────────────────
 
+/// Hook for reporting check progress to the user (used by the manual `/check` command).
+pub trait CheckProgress: Send + Sync {
+    /// Report a progress update; failures are handled by the implementation.
+    fn report<'a>(&'a self, text: &'a str) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+}
+
+/// Progress reporter that does nothing; used by scheduled / first-run checks.
+pub struct NoopProgress;
+
+impl CheckProgress for NoopProgress {
+    fn report<'a>(&'a self, _text: &'a str) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async {})
+    }
+}
+
 pub async fn run_check(
     config: &Config,
     db: &Database,
     github: &GitHubClient,
     telegram: &TelegramNotifier,
     llm: &LlmClient,
+    on_progress: &dyn CheckProgress,
 ) -> Result<()> {
     let is_first_run = !db.has_tracked_repos().await.unwrap_or(false);
     let skip_notification = is_first_run && !config.schedule.notify_on_first_run;
@@ -98,11 +123,12 @@ pub async fn run_check(
         is_first_run, skip_notification
     );
 
-    let new_releases = discover_new_releases(config, db, github).await?;
+    let new_releases = discover_new_releases(config, db, github, on_progress).await?;
     let _ = db.set_check_completed_at().await;
 
     if new_releases.is_empty() {
         info!("Check complete: no new releases found");
+        on_progress.report("✅ 检查完成,无新 release").await;
         return Ok(());
     }
 
@@ -113,11 +139,32 @@ pub async fn run_check(
             "Skipping notification for {} new releases (first run)",
             new_releases.len()
         );
+        on_progress
+            .report(&format!(
+                "✅ 检查完成,发现 {} 个新 release(首次运行已跳过通知)",
+                new_releases.len()
+            ))
+            .await;
         mark_all_notified(db, &new_releases).await?;
         return Ok(());
     }
 
-    send_notifications(config, db, telegram, llm, &new_releases).await
+    on_progress
+        .report(&format!(
+            "📢 发现 {} 个新 release,正在发送通知...",
+            new_releases.len()
+        ))
+        .await;
+
+    send_notifications(config, db, telegram, llm, &new_releases, on_progress).await?;
+
+    on_progress
+        .report(&format!(
+            "✅ 检查完成,发现 {} 个新 release,详见通知消息",
+            new_releases.len()
+        ))
+        .await;
+    Ok(())
 }
 
 // ─── Release discovery ────────────────────────────────────────────────────────
@@ -127,11 +174,15 @@ async fn discover_new_releases(
     config: &Config,
     db: &Database,
     github: &GitHubClient,
+    on_progress: &dyn CheckProgress,
 ) -> Result<Vec<NewReleaseInfo>> {
     let mut new_releases = Vec::new();
 
     for username in &config.github.usernames {
         debug!("Fetching starred repos for user '{}'", username);
+        on_progress
+            .report(&format!("📥 正在获取 {} 的 star 仓库...", username))
+            .await;
         let repos = github.get_starred_repos(username).await?;
         info!(
             "Found {} starred repos for user '{}'",
@@ -150,6 +201,14 @@ async fn discover_new_releases(
                     total,
                     username
                 );
+                on_progress
+                    .report(&format!(
+                        "⏳ 已检查 {}/{} 个仓库({})",
+                        i + 1,
+                        total,
+                        username
+                    ))
+                    .await;
             }
 
             if db.is_blacklisted(&repo.full_name).await.unwrap_or(false) {
@@ -310,10 +369,11 @@ async fn send_notifications(
     telegram: &TelegramNotifier,
     llm: &LlmClient,
     releases: &[NewReleaseInfo],
+    on_progress: &dyn CheckProgress,
 ) -> Result<()> {
     match config.schedule.notify_mode.as_str() {
         "immediate" => notify_immediate(db, telegram, releases).await,
-        "summary" => notify_summary(db, telegram, llm, releases).await,
+        "summary" => notify_summary(db, telegram, llm, releases, on_progress).await,
         other => {
             warn!("Unknown notify_mode '{}', skipping notifications", other);
             Ok(())
@@ -360,12 +420,19 @@ async fn notify_summary(
     telegram: &TelegramNotifier,
     llm: &LlmClient,
     releases: &[NewReleaseInfo],
+    on_progress: &dyn CheckProgress,
 ) -> Result<()> {
     info!(
         "Sending summary notification for {} releases",
         releases.len()
     );
 
+    on_progress
+        .report(&format!(
+            "🤖 正在生成 {} 个 release 的 AI 摘要...",
+            releases.len()
+        ))
+        .await;
     let summaries = request_llm_summaries(llm, releases).await;
 
     let date = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();

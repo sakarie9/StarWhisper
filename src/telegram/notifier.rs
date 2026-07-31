@@ -1,6 +1,6 @@
 use frankenstein::AsyncTelegramApi;
 use frankenstein::client_reqwest::Bot;
-use frankenstein::methods::SendRichMessageParams;
+use frankenstein::methods::{EditMessageTextParams, SendMessageParams, SendRichMessageParams};
 use frankenstein::rich_message::InputRichMessage;
 use frankenstein::types::ChatId;
 use tracing::{debug, error, info, warn};
@@ -51,6 +51,55 @@ impl TelegramNotifier {
             }
             Err(e) => {
                 error!("Failed to send Telegram message: {}", e);
+                Err(e.into())
+            }
+        }
+    }
+
+    /// Send a plain text message (no formatting) and return its message id.
+    ///
+    /// Used for the `/check` progress message, which is updated in place via
+    /// [`Self::edit_plain`] instead of sending multiple messages.
+    pub async fn send_plain(&self, text: &str) -> anyhow::Result<i64> {
+        debug!(
+            "Sending plain message ({} chars) to chat {}",
+            text.len(),
+            self.chat_id
+        );
+        let params = SendMessageParams::builder()
+            .chat_id(ChatId::Integer(self.chat_id))
+            .text(text.to_string())
+            .build();
+
+        match self.bot.send_message(&params).await {
+            Ok(resp) => {
+                let message_id = resp.result.message_id as i64;
+                debug!("Plain message sent (message_id: {})", message_id);
+                Ok(message_id)
+            }
+            Err(e) => {
+                error!("Failed to send Telegram plain message: {}", e);
+                Err(e.into())
+            }
+        }
+    }
+
+    /// Edit a plain text message (no formatting), used for progress updates.
+    pub async fn edit_plain(&self, message_id: i64, text: &str) -> anyhow::Result<()> {
+        debug!("Editing message {} ({} chars)", message_id, text.len());
+        let params = EditMessageTextParams::builder()
+            .chat_id(ChatId::Integer(self.chat_id))
+            .message_id(message_id as i32)
+            .text(text.to_string())
+            .build();
+
+        match self.bot.edit_message_text(&params).await {
+            Ok(_) => {
+                debug!("Message {} edited successfully", message_id);
+                Ok(())
+            }
+            Err(e) => {
+                error!("Failed to edit Telegram message {}: {}", message_id, e);
                 Err(e.into())
             }
         }

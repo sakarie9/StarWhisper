@@ -29,7 +29,6 @@ English | [中文](./README_CN.md)
 - [Bot Commands](#bot-commands)
 - [Building from Source](#building-from-source)
 - [Docker](#docker)
-- [License](#license)
 
 ---
 
@@ -104,7 +103,7 @@ The bot checks for new releases according to the cron expression in `config.toml
 
 | Command | Description |
 | --- | --- |
-| `/check` | Manually trigger a release check |
+| `/check` | Manually trigger a release check (shows live progress) |
 | `/list` | List all tracked repositories with latest versions |
 | `/blacklist add owner/repo` | Add a repository to the blacklist |
 | `/blacklist remove owner/repo` | Remove a repository from the blacklist |
