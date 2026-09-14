@@ -23,7 +23,8 @@ const SYSTEM_PROMPT: &str = "你是一个精简的 release 更新总结机器人
 - 如果 release notes 为空或无意义，description 设为 null\n\
 - 如果是重大更新（大版本、breaking change、重要新功能），description 可以稍详细\n\
 - **每个输入的 release 都必须出现在输出数组中，不能省略任何一个**\n\
-- 只输出 JSON 数组，不要输出任何其他内容\n\n";
+- 只输出 JSON 数组，不要输出思考过程、解释、markdown 代码块或其他任何内容\n\
+- 数组只能出现一次，不要在思考结束后重复输出\n\n";
 
 /// Max body chars to send to LLM
 const MAX_BODY_CHARS: usize = 2000;
@@ -272,11 +273,7 @@ impl LlmClient {
         debug!("LLM raw response: {} chars", raw.len());
         trace!("LLM raw response:\n{}", raw);
 
-        // Try to extract JSON array from response (handle markdown code blocks)
-        let json_str = extract_json(&raw);
-        debug!("Extracted JSON: {} chars", json_str.len());
-
-        match serde_json::from_str::<Vec<ReleaseSummary>>(json_str) {
+        match parse_summaries(&raw) {
             Ok(summaries) => {
                 info!("Successfully parsed {} summaries from LLM", summaries.len());
                 for s in &summaries {
@@ -285,16 +282,17 @@ impl LlmClient {
                 Ok(summaries)
             }
             Err(e) => {
-                warn!("Failed to parse LLM JSON output: {}. Raw: {}", e, raw);
+                warn!("Failed to parse LLM JSON output: {:#}. Raw: {}", e, raw);
+                warn!(
+                    "Falling back to {} releases without descriptions",
+                    releases.len()
+                );
                 // Fallback: return entries without descriptions
                 Ok(releases
                     .iter()
-                    .map(|(repo, _, _)| {
-                        warn!("Fallback: using repo={} without description", repo);
-                        ReleaseSummary {
-                            repo: repo.clone(),
-                            description: None,
-                        }
+                    .map(|(repo, _, _)| ReleaseSummary {
+                        repo: repo.clone(),
+                        description: None,
                     })
                     .collect())
             }
@@ -390,28 +388,248 @@ impl LlmClient {
     }
 }
 
-/// Extract JSON array from LLM response, handling markdown code blocks
-fn extract_json(raw: &str) -> &str {
+/// Closing tags that reasoning models may emit around their scratchpad. The
+/// escaped `<\think` spelling is included because some models (and some
+/// templates) print the backslash literally.
+const THINK_CLOSE_TAGS: [&str; 2] = ["</think", "<\\think"];
+
+/// Parse the LLM response into release summaries.
+///
+/// Reasoning models do not always respect "only output JSON": a typical broken
+/// response looks like a fenced array, then `</think>`, then the same array
+/// again. Slicing from the first `[` to the last `]` would swallow the prose in
+/// between and fail with "trailing characters". Instead we look at the text
+/// after the last reasoning terminator first, then at every *balanced* JSON
+/// array, and finally salvage complete objects from a truncated array.
+fn parse_summaries(raw: &str) -> anyhow::Result<Vec<ReleaseSummary>> {
+    for candidate in json_candidates(raw) {
+        if let Ok(summaries) = serde_json::from_str::<Vec<ReleaseSummary>>(&candidate)
+            && !summaries.is_empty()
+        {
+            debug!(
+                "Parsed {} summaries from {} char JSON candidate",
+                summaries.len(),
+                candidate.len()
+            );
+            return Ok(summaries);
+        }
+    }
+
+    // Truncated or otherwise malformed array: keep every complete object we can
+    // parse instead of throwing the whole batch away.
+    let salvaged = salvage_summaries(raw);
+    if !salvaged.is_empty() {
+        warn!(
+            "Salvaged {} summaries from malformed LLM JSON output",
+            salvaged.len()
+        );
+        return Ok(salvaged);
+    }
+
+    Err(anyhow::anyhow!("no parseable JSON summary array found"))
+}
+
+/// Candidate JSON array slices, most promising first.
+fn json_candidates(raw: &str) -> Vec<String> {
+    let mut candidates: Vec<String> = Vec::new();
+
+    // The real answer normally follows the reasoning terminator.
+    if let Some(idx) = last_think_close(raw) {
+        let tail = raw[idx..].trim();
+        if !tail.is_empty() {
+            candidates.push(tail.to_string());
+        }
+    }
+
+    // Balanced arrays in order of appearance. This also strips markdown code
+    // fences and any prose the model wrapped around the JSON.
+    candidates.extend(balanced_arrays(raw));
+
+    // Last resort: the whole trimmed response (e.g. a bare JSON object).
     let trimmed = raw.trim();
-    // Handle ```json ... ``` code blocks
-    if trimmed.starts_with("```") {
-        debug!("Stripping markdown code block from LLM response");
-        let start = trimmed.find('\n').map(|i| i + 1).unwrap_or(3);
-        let end = trimmed.rfind("```").unwrap_or(trimmed.len());
-        return trimmed[start..end].trim();
+    if !trimmed.is_empty() && !candidates.iter().any(|c| c == trimmed) {
+        candidates.push(trimmed.to_string());
     }
-    // Find the first [ and last ] for raw JSON
-    if let Some(start) = trimmed.find('[')
-        && let Some(end) = trimmed.rfind(']')
-    {
-        debug!("Extracting JSON array from position {} to {}", start, end);
-        return &trimmed[start..=end];
+
+    candidates
+}
+
+/// Return the byte index just past the last reasoning closing tag, if any.
+fn last_think_close(text: &str) -> Option<usize> {
+    let lower = text.to_ascii_lowercase();
+    THINK_CLOSE_TAGS
+        .iter()
+        .filter_map(|tag| lower.rfind(tag).map(|idx| (idx, *tag)))
+        .max_by_key(|(idx, _)| *idx)
+        .and_then(|(idx, tag)| {
+            lower[idx + tag.len()..]
+                .find('>')
+                .map(|gt| idx + tag.len() + gt + 1)
+        })
+}
+
+/// Every balanced top-level JSON array in `text`, in order of appearance.
+/// Unbalanced (truncated) arrays and brackets inside strings are handled.
+fn balanced_arrays(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut arrays = Vec::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'[' {
+            match matching_bracket(text, i, b'[', b']') {
+                Some(end) => {
+                    arrays.push(text[i..=end].to_string());
+                    i = end + 1;
+                    continue;
+                }
+                None => break, // truncated array, nothing balanced follows
+            }
+        }
+        i += 1;
     }
-    debug!("No JSON array markers found, using full response");
-    trimmed
+
+    arrays
+}
+
+/// Recover summaries from a truncated/malformed array by parsing each complete
+/// top-level `{...}` object independently.
+fn salvage_summaries(text: &str) -> Vec<ReleaseSummary> {
+    let bytes = text.as_bytes();
+    let mut summaries = Vec::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            match matching_bracket(text, i, b'{', b'}') {
+                Some(end) => {
+                    if let Ok(summary) = serde_json::from_str::<ReleaseSummary>(&text[i..=end]) {
+                        summaries.push(summary);
+                    }
+                    i = end + 1;
+                    continue;
+                }
+                None => break,
+            }
+        }
+        i += 1;
+    }
+
+    summaries
+}
+
+/// Given the byte index of an opening bracket, return the byte index of its
+/// match, ignoring brackets that appear inside JSON strings.
+fn matching_bracket(text: &str, start: usize, open: u8, close: u8) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, &b) in bytes[start..].iter().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if b == b'"' {
+            in_string = true;
+        } else if b == open {
+            depth += 1;
+        } else if b == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(start + offset);
+            }
+        }
+    }
+
+    None
 }
 
 fn system_tokens_approx() -> usize {
     // Rough estimate, actual counted in batch_by_tokens
     200
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repos(summaries: &[ReleaseSummary]) -> Vec<&str> {
+        summaries.iter().map(|s| s.repo.as_str()).collect()
+    }
+
+    #[test]
+    fn parses_plain_json_array() {
+        let raw = r#"[{"repo": "a/b", "description": "修复 bug"}]"#;
+        let summaries = parse_summaries(raw).unwrap();
+        assert_eq!(repos(&summaries), vec!["a/b"]);
+        assert_eq!(summaries[0].description.as_deref(), Some("修复 bug"));
+    }
+
+    #[test]
+    fn parses_fenced_json_array() {
+        let raw = "```json\n[{\"repo\": \"a/b\", \"description\": null}]\n```";
+        let summaries = parse_summaries(raw).unwrap();
+        assert_eq!(repos(&summaries), vec!["a/b"]);
+        assert!(summaries[0].description.is_none());
+    }
+
+    #[test]
+    fn parses_duplicated_array_after_think_tag() {
+        // Reproduces the reported failure: the model emitted the array inside a
+        // code block, then `</think>`, then repeated the array. Slicing from the
+        // first `[` to the last `]` used to fail with "trailing characters".
+        let raw = "\n\n[\n  {\"repo\": \"AnYiEE/touhou\", \"description\": \"发布 v2.10.3 版本\"},\n  {\"repo\": \"wushuo894/ani-rss\", \"description\": \"修复安全问题\"}\n]\n```\nEnd of thought process.\n</think>\n\n[\n  {\"repo\": \"AnYiEE/touhou\", \"description\": \"发布 v2.10.3 版本\"},\n  {\"repo\": \"wushuo894/ani-rss\", \"description\": \"修复安全问题\"}\n]\n";
+        let summaries = parse_summaries(raw).unwrap();
+        assert_eq!(
+            repos(&summaries),
+            vec!["AnYiEE/touhou", "wushuo894/ani-rss"]
+        );
+        assert_eq!(summaries[1].description.as_deref(), Some("修复安全问题"));
+    }
+
+    #[test]
+    fn parses_answer_following_escaped_think_tag() {
+        let raw = "<\\think>\nreasoning about [stuff]\n<\\think>\n[{\"repo\": \"a/b\", \"description\": \"x\"}]";
+        let summaries = parse_summaries(raw).unwrap();
+        assert_eq!(repos(&summaries), vec!["a/b"]);
+    }
+
+    #[test]
+    fn ignores_prose_brackets_before_json() {
+        let raw = "Here are the tags [v1, v2] and the result:\n[{\"repo\": \"a/b\", \"description\": \"x\"}]";
+        let summaries = parse_summaries(raw).unwrap();
+        assert_eq!(repos(&summaries), vec!["a/b"]);
+    }
+
+    #[test]
+    fn salvages_objects_from_truncated_array() {
+        let raw = "[{\"repo\": \"a/b\", \"description\": \"first\"}, {\"repo\": \"c/d\", \"descrip";
+        let summaries = parse_summaries(raw).unwrap();
+        assert_eq!(repos(&summaries), vec!["a/b"]);
+    }
+
+    #[test]
+    fn keeps_brackets_inside_strings() {
+        let raw = r#"[{"repo": "a/b", "description": "支持 [x] 与 {y} 语法"}]"#;
+        let summaries = parse_summaries(raw).unwrap();
+        assert_eq!(
+            summaries[0].description.as_deref(),
+            Some("支持 [x] 与 {y} 语法")
+        );
+    }
+
+    #[test]
+    fn errors_on_unparseable_output() {
+        assert!(parse_summaries("I could not summarize these releases.").is_err());
+        assert!(parse_summaries("").is_err());
+    }
 }
