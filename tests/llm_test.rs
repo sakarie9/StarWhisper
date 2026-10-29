@@ -9,6 +9,7 @@ fn test_llm_client_creation() {
         model: "gpt-4o".to_string(),
         api_base: None,
         max_tokens: 65536,
+        language: "中文".to_string(),
     };
 
     let _client = LlmClient::new(config);
@@ -22,6 +23,7 @@ fn test_llm_client_with_custom_base() {
         model: "claude-sonnet-4-20250514".to_string(),
         api_base: Some("https://custom.api.com/v1".to_string()),
         max_tokens: 65536,
+        language: "English".to_string(),
     };
 
     let _client = LlmClient::new(config);

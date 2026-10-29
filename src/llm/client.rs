@@ -6,7 +6,7 @@ use std::time::Duration;
 use tiktoken_rs::cl100k_base;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::config::LlmConfig;
+use crate::config::{DEFAULT_LANGUAGE, LlmConfig};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ReleaseSummary {
@@ -15,16 +15,28 @@ pub struct ReleaseSummary {
     pub description: Option<String>,
 }
 
-/// System prompt template (constant part)
-const SYSTEM_PROMPT: &str = "你是一个精简的 release 更新总结机器人。请用中文总结以下新发布的版本更新。\n\
+/// System prompt template (constant part). `{language}` is replaced with the
+/// configured target language.
+const SYSTEM_PROMPT_TEMPLATE: &str = "你是一个精简的 release 更新总结机器人。请务必使用以下目标语言撰写总结：{language}。\n\
 输出要求：返回一个 JSON 数组，每个元素格式如下：\n\
 {\"repo\": \"owner/name\", \"description\": \"一句话概括核心变更\"}\n\
-- description 要极度精简，一句话概括核心变更\n\
+- description 要极度精简，用{language}一句话概括核心变更\n\
 - 如果 release notes 为空或无意义，description 设为 null\n\
 - 如果是重大更新（大版本、breaking change、重要新功能），description 可以稍详细\n\
 - **每个输入的 release 都必须出现在输出数组中，不能省略任何一个**\n\
 - 只输出 JSON 数组，不要输出思考过程、解释、markdown 代码块或其他任何内容\n\
 - 数组只能出现一次，不要在思考结束后重复输出\n\n";
+
+/// Build the system prompt for the given target language.
+fn build_system_prompt(language: &str) -> String {
+    let language = language.trim();
+    let language = if language.is_empty() {
+        DEFAULT_LANGUAGE
+    } else {
+        language
+    };
+    SYSTEM_PROMPT_TEMPLATE.replace("{language}", language)
+}
 
 /// Max body chars to send to LLM
 const MAX_BODY_CHARS: usize = 2000;
@@ -51,8 +63,8 @@ impl LlmClient {
         let encoder = cl100k_base().expect("Failed to load tiktoken encoder");
 
         info!(
-            "LLM client created: provider={}, model={}, max_tokens={}",
-            config.provider, config.model, config.max_tokens
+            "LLM client created: provider={}, model={}, max_tokens={}, language={}",
+            config.provider, config.model, config.max_tokens, config.language
         );
         Self {
             client,
@@ -121,7 +133,8 @@ impl LlmClient {
 
         // Batch by token count
         let max_prompt_tokens = self.config.max_tokens.saturating_sub(RESERVED_TOKENS);
-        let system_tokens = self.count_tokens(SYSTEM_PROMPT);
+        let system_prompt = build_system_prompt(&self.config.language);
+        let system_tokens = self.count_tokens(&system_prompt);
         let available_tokens = max_prompt_tokens.saturating_sub(system_tokens);
 
         info!(
@@ -230,7 +243,7 @@ impl LlmClient {
         &self,
         releases: &[(String, String, Option<String>)],
     ) -> anyhow::Result<Vec<ReleaseSummary>> {
-        let mut prompt = String::from(SYSTEM_PROMPT);
+        let mut prompt = build_system_prompt(&self.config.language);
         for (repo, tag, body) in releases {
             prompt.push_str(&format!("## {} ({})\n", repo, tag));
             if let Some(b) = body {
@@ -631,5 +644,20 @@ mod tests {
     fn errors_on_unparseable_output() {
         assert!(parse_summaries("I could not summarize these releases.").is_err());
         assert!(parse_summaries("").is_err());
+    }
+
+    #[test]
+    fn builds_prompt_with_configured_language() {
+        let prompt = build_system_prompt("English");
+        assert!(prompt.contains("English"));
+        assert!(!prompt.contains("{language}"));
+        assert!(!prompt.contains("请用中文"));
+    }
+
+    #[test]
+    fn empty_language_falls_back_to_default() {
+        let prompt = build_system_prompt("  ");
+        assert!(prompt.contains(DEFAULT_LANGUAGE));
+        assert!(!prompt.contains("{language}"));
     }
 }

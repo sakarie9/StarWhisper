@@ -70,6 +70,7 @@ api_key = "sk-xxx"                    # API 密钥
 model = "gpt-4o"                      # 模型名称
 api_base = "https://api.openai.com/v1"  # 可选，API 代理地址
 max_tokens = 65536                    # 可选，上下文窗口大小
+language = "English"                  # 可选，总结目标语言，默认 "English"（如 "中文"、"日本語"）
 
 [database]
 path = "data.db"                      # SQLite 数据库路径

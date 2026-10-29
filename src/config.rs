@@ -31,10 +31,20 @@ pub struct LlmConfig {
     /// Max context window size in tokens (default 64K)
     #[serde(default = "default_max_tokens")]
     pub max_tokens: usize,
+    /// Target language for LLM summaries (default "English").
+    #[serde(default = "default_language")]
+    pub language: String,
 }
 
 fn default_max_tokens() -> usize {
     65536
+}
+
+/// Default target language for LLM summaries.
+pub const DEFAULT_LANGUAGE: &str = "English";
+
+fn default_language() -> String {
+    DEFAULT_LANGUAGE.to_string()
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -57,7 +67,8 @@ impl Config {
     /// 1. `STARWHISPER_CONFIG` environment variable
     /// 2. `config.toml` (default, in the current working directory)
     pub fn load() -> anyhow::Result<Self> {
-        let path = std::env::var("STARWHISPER_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
+        let path =
+            std::env::var("STARWHISPER_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
         debug!("Reading config from '{}'", path);
         let content = std::fs::read_to_string(&path)
             .map_err(|e| anyhow::anyhow!("Failed to read config file '{}': {}", path, e))?;

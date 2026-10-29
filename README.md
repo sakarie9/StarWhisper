@@ -70,6 +70,7 @@ api_key = "sk-xxx"                    # API key
 model = "gpt-4o"                      # Model name
 api_base = "https://api.openai.com/v1"  # Optional API base URL
 max_tokens = 65536                    # Optional, context window size
+language = "English"                  # Optional, summary language (default "English", e.g. "中文")
 
 [database]
 path = "data.db"                      # SQLite database path

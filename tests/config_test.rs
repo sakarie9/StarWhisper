@@ -32,6 +32,7 @@ notify_mode = "summary"
         assert_eq!(config.telegram.chat_id, "-100123");
         assert_eq!(config.llm.provider, "openai");
         assert_eq!(config.llm.model, "gpt-4o");
+        assert_eq!(config.llm.language, "English"); // default language
         assert_eq!(config.database.path, ":memory:");
         assert_eq!(config.schedule.cron, "0 8 * * *");
         assert_eq!(config.schedule.notify_mode, "summary");

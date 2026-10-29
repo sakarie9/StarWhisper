@@ -12,6 +12,7 @@ api_key = "sk-xxx"
 model = "gpt-4o"
 api_base = "https://api.openai.com/v1"  # 可选，用于代理
 max_tokens = 65536    # 可选，默认 64K，按模型上下文窗口配置
+language = "English"   # 可选，总结使用的目标语言，默认 "English"（例如 "中文"、"日本語"）
 
 [database]
 path = "data.db"
